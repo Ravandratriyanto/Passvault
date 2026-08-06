@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import QRCode from "qrcode";
+  import { ArrowLeft, TriangleAlert } from "@lucide/svelte";
 
   let { onBack }: { onBack: () => void } = $props();
 
@@ -49,13 +50,13 @@
 
 <div class="wrap">
   <div class="header">
-    <button class="back" onclick={onBack}>← Back</button>
+    <button class="back" onclick={onBack}><ArrowLeft size={13} /> Back</button>
     <h2>Export vault</h2>
   </div>
 
   <p class="warn">
-    ⚠️ Anyone with this backup <em>and</em> your PIN (and keyfile, if set) can decrypt your vault.
-    Keep it private.
+    <TriangleAlert size={16} strokeWidth={2} />
+    <span>Anyone with this backup <em>and</em> your PIN (and keyfile, if set) can decrypt your vault. Keep it private.</span>
   </p>
 
   {#if loading}
@@ -88,14 +89,16 @@
   .wrap { max-width: 500px; margin: 0 auto; padding: 32px; display: flex; flex-direction: column; gap: 16px; }
   .header { display: flex; align-items: center; gap: 16px; }
   .header h2 { font-size: 20px; font-weight: 600; }
-  .back { background: transparent; color: #a0aec0; font-size: 13px; padding: 4px 8px; }
+  .back { background: transparent; color: #a0aec0; font-size: 13px; padding: 4px 8px; display: inline-flex; align-items: center; gap: 4px; }
   .back:hover { color: #e2e8f0; }
 
   .warn {
     background: rgba(251, 191, 36, 0.1); color: #fbbf24;
     border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 8px;
     padding: 12px; font-size: 13px;
+    display: flex; align-items: flex-start; gap: 8px;
   }
+  .warn :global(svg) { flex-shrink: 0; margin-top: 1px; }
   .warn em { font-style: italic; }
 
   .qr {

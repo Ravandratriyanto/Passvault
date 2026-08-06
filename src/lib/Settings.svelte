@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import Export from "./Export.svelte";
+  import { ArrowLeft } from "@lucide/svelte";
 
   let { onBack }: { onBack: () => void } = $props();
   let showExport = $state(false);
@@ -61,7 +62,7 @@
 
 <div class="wrap">
   <div class="header">
-    <button class="back" onclick={onBack}>← Back</button>
+    <button class="back" onclick={onBack}><ArrowLeft size={13} /> Back</button>
     <h2>Settings</h2>
   </div>
 
@@ -130,7 +131,7 @@
   .wrap { max-width: 500px; margin: 0 auto; padding: 32px; display: flex; flex-direction: column; gap: 16px; }
   .header { display: flex; align-items: center; gap: 16px; }
   .header h2 { font-size: 20px; font-weight: 600; }
-  .back { background: transparent; color: #a0aec0; font-size: 13px; padding: 4px 8px; }
+  .back { background: transparent; color: #a0aec0; font-size: 13px; padding: 4px 8px; display: inline-flex; align-items: center; gap: 4px; }
   .back:hover { color: #e2e8f0; }
 
   .row {

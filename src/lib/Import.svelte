@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { ArrowLeft, Paperclip, X, Check, Delete } from "@lucide/svelte";
 
   let { onDone, onBack }: { onDone: () => void; onBack: () => void } = $props();
 
@@ -73,7 +74,7 @@
 <div class="screen">
   <div class="card">
     <div class="header">
-      <button class="back" onclick={onBack}>← Back</button>
+      <button class="back" onclick={onBack}><ArrowLeft size={13} /> Back</button>
       <h1>Restore from backup</h1>
     </div>
 
@@ -106,12 +107,12 @@
       />
       {#if !keyfileBytes}
         <button class="secondary" onclick={() => keyfileInput?.click()} disabled={loading}>
-          📎 Select keyfile
+          <Paperclip size={14} /> Select keyfile
         </button>
       {:else}
         <div class="chip">
-          <span>📎 {keyfileName}</span>
-          <button onclick={clearKeyfile}>✕</button>
+          <span class="chip-name"><Paperclip size={14} /> {keyfileName}</span>
+          <button onclick={clearKeyfile} aria-label="Remove keyfile"><X size={14} /></button>
         </div>
       {/if}
     </div>
@@ -127,10 +128,12 @@
         {#each ["1","2","3","4","5","6","7","8","9"] as d}
           <button class="key" onclick={() => press(d)} disabled={loading}>{d}</button>
         {/each}
-        <button class="key ghost" onclick={backspace} disabled={loading}>⌫</button>
+        <button class="key ghost" onclick={backspace} disabled={loading} aria-label="Backspace">
+          <Delete size={20} />
+        </button>
         <button class="key" onclick={() => press("0")} disabled={loading}>0</button>
-        <button class="key confirm" onclick={submit} disabled={loading || pin.length === 0}>
-          {loading ? "…" : "✓"}
+        <button class="key confirm" onclick={submit} disabled={loading || pin.length === 0} aria-label="Restore">
+          {#if loading}…{:else}<Check size={20} />{/if}
         </button>
       </div>
     </div>
@@ -147,7 +150,7 @@
     display: flex; flex-direction: column; gap: 16px;
   }
   .header { display: flex; align-items: center; gap: 12px; }
-  .back { background: transparent; color: #a0aec0; font-size: 13px; padding: 4px 8px; }
+  .back { background: transparent; color: #a0aec0; font-size: 13px; padding: 4px 8px; display: inline-flex; align-items: center; gap: 4px; }
   .back:hover { color: #e2e8f0; }
   h1 { font-size: 18px; font-weight: 600; }
 
@@ -163,6 +166,7 @@
   .secondary {
     background: transparent; color: #a0aec0; border: 1px dashed #4a5568;
     padding: 8px; border-radius: 6px; font-size: 12px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   }
   .secondary:hover { background: #2d3748; color: #e2e8f0; }
   .chip {
@@ -170,7 +174,11 @@
     background: #1e1b4b; border: 1px solid #4f46e5; border-radius: 6px;
     padding: 6px 10px; font-size: 12px;
   }
-  .chip button { background: transparent; color: #a0aec0; padding: 0 4px; }
+  .chip-name { display: inline-flex; align-items: center; gap: 6px; }
+  .chip button {
+    background: transparent; color: #a0aec0; padding: 2px;
+    display: flex; align-items: center; justify-content: center;
+  }
   .chip button:hover { color: #fc8181; }
 
   .dots { display: flex; gap: 10px; justify-content: center; padding: 4px 0; }
@@ -185,6 +193,7 @@
     background: #2d3748; color: #e2e8f0;
     font-size: 18px; font-weight: 500;
     padding: 12px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
   }
   .key:hover:not(:disabled) { background: #4a5568; }
   .key:disabled { opacity: 0.4; cursor: not-allowed; }

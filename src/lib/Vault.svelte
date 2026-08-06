@@ -4,6 +4,7 @@
   import AddEntry from "./AddEntry.svelte";
   import DeleteAccount from "./DeleteAccount.svelte";
   import Settings from "./Settings.svelte";
+  import { Shield, Settings as SettingsIcon } from "@lucide/svelte";
   let showDelete = $state(false);
   let showSettings = $state(false);
 
@@ -91,9 +92,11 @@
 <div class="layout">
   <aside>
     <div class="sidebar-top">
-      <span class="logo">🔐 Passvault</span>
+      <span class="logo"><Shield size={16} strokeWidth={2} /> Passvault</span>
       <div class="sidebar-actions">
-        <button class="icon-btn" title="Settings" onclick={() => showSettings = true}>⚙</button>
+        <button class="icon-btn" title="Settings" onclick={() => showSettings = true} aria-label="Settings">
+          <SettingsIcon size={16} />
+        </button>
         <button class="lock-btn" onclick={lock}>Lock</button>
       </div>
     </div>
@@ -198,9 +201,9 @@
     gap: 8px;
   }
   .sidebar-top { display: flex; align-items: center; justify-content: space-between; padding: 4px 0 8px; }
-  .logo { font-weight: 700; font-size: 15px; }
+  .logo { font-weight: 700; font-size: 15px; display: inline-flex; align-items: center; gap: 6px; color: #e2e8f0; }
   .sidebar-actions { display: flex; align-items: center; gap: 6px; }
-  .icon-btn { background: transparent; color: #9ca3af; font-size: 16px; padding: 2px 6px; }
+  .icon-btn { background: transparent; color: #9ca3af; padding: 4px; display: inline-flex; align-items: center; justify-content: center; }
   .icon-btn:hover { color: #e2e8f0; }
   .lock-btn { background: #374151; color: #d1d5db; font-size: 12px; padding: 4px 10px; }
   .lock-btn:hover { background: #4b5563; }

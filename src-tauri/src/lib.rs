@@ -9,7 +9,7 @@ use rand::Rng;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, State, WindowEvent,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -449,11 +449,14 @@ fn import_vault(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(app);
+        }))
         .manage(AppState::new())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            None,
+            Some(vec!["--hidden"]),
         ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -466,14 +469,18 @@ pub fn run() {
         )
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                let _ = window.set_skip_taskbar(true);
+                let _ = window.app_handle().emit("close-requested", ());
                 api.prevent_close();
             }
         })
         .setup(|app| {
             let handle = app.handle().clone();
             let cfg = settings::load(&handle);
+
+            let hidden_launch = std::env::args().any(|a| a == "--hidden");
+            if !hidden_launch {
+                show_main(&handle);
+            }
 
             if let Err(e) = apply_hotkey(&handle, &cfg.hotkey, None) {
                 eprintln!("hotkey registration failed: {}", e);

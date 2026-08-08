@@ -70,7 +70,7 @@
     <div class="row">
       <div class="label">
         <div class="name">Global hotkey</div>
-        <div class="hint">Press this from anywhere to open Passvault</div>
+        <div class="hint">Press this from anywhere to open Onyxlock</div>
       </div>
       <div class="control">
         {#if capturing}

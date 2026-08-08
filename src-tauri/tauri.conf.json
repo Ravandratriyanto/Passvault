@@ -1,7 +1,7 @@
 {
-  "productName": "Passvault",
+  "productName": "Onyxlock",
   "version": "0.0.0",
-  "identifier": "com.passvault.app",
+  "identifier": "com.onyxlock.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Passvault",
+        "title": "Onyxlock",
         "width": 900,
         "height": 650,
         "resizable": true,

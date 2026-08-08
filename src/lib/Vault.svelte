@@ -92,7 +92,7 @@
 <div class="layout">
   <aside>
     <div class="sidebar-top">
-      <span class="logo"><Shield size={16} strokeWidth={2} /> Passvault</span>
+      <span class="logo"><Shield size={16} strokeWidth={2} /> Onyxlock</span>
       <div class="sidebar-actions">
         <button class="icon-btn" title="Settings" onclick={() => showSettings = true} aria-label="Settings">
           <SettingsIcon size={16} />

@@ -14,16 +14,24 @@ use tauri::{
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use uuid::Uuid;
-use crypto::{decrypt, derive_key, encrypt, random_salt};
+use zeroize::Zeroizing;
+use crypto::{
+    decrypt, encrypt, random_salt, random_key,
+    derive_key_legacy, derive_factor_key, Factor,
+    shamir_split_2of, shamir_combine_2,
+};
 use vault::{Vault, VaultEntry};
-use state::{AppState, UnlockedVault};
+use state::{AppState, UnlockedVault, VaultFormat};
 use settings::Settings;
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use flate2::{write::DeflateEncoder, read::DeflateDecoder, Compression};
 use std::io::{Read, Write};
 
-const FILE_VERSION: u8 = 2;
-const FLAG_KEYFILE: u8 = 0x01;
+const FILE_VERSION_V3: u8 = 3;
+const FLAG_KEYFILE_V2: u8 = 0x01;
+const F_PIN: u8 = 0b001;
+const F_PW:  u8 = 0b010;
+const F_KF:  u8 = 0b100;
 const AUTO_LOCK_SECS: u64 = 300;
 
 fn vault_path(app: &AppHandle) -> std::path::PathBuf {
@@ -134,29 +142,64 @@ fn set_autostart_os(app: &AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
+fn push_lp16(buf: &mut Vec<u8>, data: &[u8]) {
+    buf.extend_from_slice(&(data.len() as u16).to_le_bytes());
+    buf.extend_from_slice(data);
+}
+
+fn build_v3_file(flags: u8, salt: &[u8; 16], vault_ct: &[u8], shares_blob: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(22 + vault_ct.len() + shares_blob.len());
+    out.push(FILE_VERSION_V3);
+    out.push(flags);
+    out.extend_from_slice(salt);
+    out.extend_from_slice(&(vault_ct.len() as u32).to_le_bytes());
+    out.extend_from_slice(vault_ct);
+    out.extend_from_slice(shares_blob);
+    out
+}
+
 #[tauri::command]
 fn vault_exists(app: AppHandle) -> bool {
     vault_path(&app).exists()
 }
 
+#[derive(serde::Serialize)]
+pub struct VaultInfo {
+    pub version: u8,
+    pub needs_pin: bool,
+    pub needs_password: bool,
+    pub needs_keyfile: bool,
+}
+
 #[tauri::command]
-fn vault_needs_keyfile(app: AppHandle) -> Result<bool, String> {
+fn vault_info(app: AppHandle) -> Result<VaultInfo, String> {
     let path = vault_path(&app);
-    if !path.exists() {
-        return Ok(false);
-    }
+    if !path.exists() { return Err("no vault".into()); }
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
-    if data.len() < 2 {
-        return Err("corrupt vault".into());
+    if data.len() < 2 { return Err("corrupt vault".into()); }
+    match data[0] {
+        1 | 2 => Ok(VaultInfo {
+            version: data[0],
+            needs_pin: true,
+            needs_password: false,
+            needs_keyfile: data[1] & FLAG_KEYFILE_V2 != 0,
+        }),
+        3 => {
+            let f = data[1];
+            Ok(VaultInfo {
+                version: 3,
+                needs_pin: f & F_PIN != 0,
+                needs_password: f & F_PW != 0,
+                needs_keyfile: f & F_KF != 0,
+            })
+        }
+        _ => Err("unsupported vault version".into()),
     }
-    if data[0] != 1 && data[0] != 2 {
-        return Err("unsupported vault version".into());
-    }
-    Ok(data[1] & FLAG_KEYFILE != 0)
 }
 
 #[tauri::command]
 fn setup(
+    pin: String,
     password: String,
     keyfile: Option<Vec<u8>>,
     autostart: Option<bool>,
@@ -166,19 +209,38 @@ fn setup(
     if vault_path(&app).exists() {
         return Err("vault already exists".into());
     }
+    if pin.is_empty() || password.is_empty() {
+        return Err("PIN and password are both required".into());
+    }
+
     let salt = random_salt();
-    let key = derive_key(&password, keyfile.as_deref(), &salt);
+    let master_key = random_key();
+
+    let has_kf = keyfile.is_some();
+    let flags = F_PIN | F_PW | if has_kf { F_KF } else { 0 };
+    let n_shares = if has_kf { 3 } else { 2 };
+
+    let shares = shamir_split_2of(&master_key, n_shares);
+
+    let pin_key = derive_factor_key(Factor::Pin, pin.as_bytes(), &salt);
+    let pw_key  = derive_factor_key(Factor::Password, password.as_bytes(), &salt);
+    let pin_share_ct = encrypt(&shares[0], &pin_key);
+    let pw_share_ct  = encrypt(&shares[1], &pw_key);
+    let kf_share_ct = if let Some(kf) = keyfile.as_deref() {
+        let kf_key = derive_factor_key(Factor::Keyfile, kf, &salt);
+        Some(encrypt(&shares[2], &kf_key))
+    } else { None };
+
     let vault = Vault::default();
     let json = serde_json::to_vec(&vault).unwrap();
-    let encrypted = encrypt(&compress(&json), &key);
+    let vault_ct = encrypt(&compress(&json), &master_key);
 
-    let flags: u8 = if keyfile.is_some() { FLAG_KEYFILE } else { 0 };
-    let mut file_data = Vec::with_capacity(18 + encrypted.len());
-    file_data.push(FILE_VERSION);
-    file_data.push(flags);
-    file_data.extend_from_slice(&salt);
-    file_data.extend_from_slice(&encrypted);
+    let mut shares_blob = Vec::new();
+    push_lp16(&mut shares_blob, &pin_share_ct);
+    push_lp16(&mut shares_blob, &pw_share_ct);
+    if let Some(ref kf_ct) = kf_share_ct { push_lp16(&mut shares_blob, kf_ct); }
 
+    let file_data = build_v3_file(flags, &salt, &vault_ct, &shares_blob);
     std::fs::create_dir_all(vault_path(&app).parent().unwrap()).ok();
     std::fs::write(vault_path(&app), &file_data).map_err(|e| e.to_string())?;
 
@@ -191,17 +253,131 @@ fn setup(
 
     *state.vault.lock().unwrap() = Some(UnlockedVault {
         entries: vault.entries,
-        key,
-        salt,
-        flags,
+        master_key,
+        format: VaultFormat::V3 { salt, flags, shares_blob },
         last_activity: Instant::now(),
     });
     Ok(())
 }
 
+fn unlock_legacy(
+    file_data: &[u8],
+    pin: Option<String>,
+    keyfile: Option<Vec<u8>>,
+) -> Result<UnlockedVault, String> {
+    if file_data.len() < 18 { return Err("corrupt vault file".into()); }
+    let version = file_data[0];
+    let flags = file_data[1];
+    let salt: [u8; 16] = file_data[2..18].try_into().unwrap();
+    let encrypted = &file_data[18..];
+
+    let pin = pin.ok_or("PIN required")?;
+    if flags & FLAG_KEYFILE_V2 != 0 && keyfile.is_none() {
+        return Err("keyfile required".into());
+    }
+
+    let key = derive_key_legacy(&pin, keyfile.as_deref(), &salt);
+    let decrypted = decrypt(encrypted, &key)
+        .map_err(|_| "decryption failed — wrong password".to_string())?;
+    let json = if version == 2 { decompress(&decrypted)? } else { decrypted };
+    let vault: Vault = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
+
+    Ok(UnlockedVault {
+        entries: vault.entries,
+        master_key: key,
+        format: VaultFormat::LegacyV2 { salt, flags },
+        last_activity: Instant::now(),
+    })
+}
+
+fn unlock_v3(
+    file_data: &[u8],
+    pin: Option<String>,
+    password: Option<String>,
+    keyfile: Option<Vec<u8>>,
+) -> Result<UnlockedVault, String> {
+    if file_data.len() < 22 { return Err("corrupt vault file".into()); }
+    let flags = file_data[1];
+    let salt: [u8; 16] = file_data[2..18].try_into().unwrap();
+    let vault_ct_len = u32::from_le_bytes(file_data[18..22].try_into().unwrap()) as usize;
+    let vault_end = 22 + vault_ct_len;
+    if file_data.len() < vault_end { return Err("corrupt vault file".into()); }
+    let vault_ct = &file_data[22..vault_end];
+    let shares_blob = &file_data[vault_end..];
+
+    let mut cur = 0usize;
+    let mut pin_ct: Option<&[u8]> = None;
+    let mut pw_ct:  Option<&[u8]> = None;
+    let mut kf_ct:  Option<&[u8]> = None;
+    for (bit, slot) in [
+        (F_PIN, &mut pin_ct),
+        (F_PW,  &mut pw_ct),
+        (F_KF,  &mut kf_ct),
+    ] {
+        if flags & bit != 0 {
+            if cur + 2 > shares_blob.len() { return Err("truncated share".into()); }
+            let n = u16::from_le_bytes(shares_blob[cur..cur+2].try_into().unwrap()) as usize;
+            cur += 2;
+            if cur + n > shares_blob.len() { return Err("truncated share".into()); }
+            *slot = Some(&shares_blob[cur..cur+n]);
+            cur += n;
+        }
+    }
+
+    let mut recovered: Vec<[u8; 33]> = Vec::with_capacity(2);
+    if let (Some(p), Some(ct)) = (pin.as_deref(), pin_ct) {
+        let k = derive_factor_key(Factor::Pin, p.as_bytes(), &salt);
+        if let Ok(pt) = decrypt(ct, &k) {
+            if pt.len() == 33 {
+                recovered.push(pt.as_slice().try_into().unwrap());
+            }
+        }
+    }
+    if recovered.len() < 2 {
+        if let (Some(p), Some(ct)) = (password.as_deref(), pw_ct) {
+            let k = derive_factor_key(Factor::Password, p.as_bytes(), &salt);
+            if let Ok(pt) = decrypt(ct, &k) {
+                if pt.len() == 33 {
+                    recovered.push(pt.as_slice().try_into().unwrap());
+                }
+            }
+        }
+    }
+    if recovered.len() < 2 {
+        if let (Some(kf), Some(ct)) = (keyfile.as_deref(), kf_ct) {
+            let k = derive_factor_key(Factor::Keyfile, kf, &salt);
+            if let Ok(pt) = decrypt(ct, &k) {
+                if pt.len() == 33 {
+                    recovered.push(pt.as_slice().try_into().unwrap());
+                }
+            }
+        }
+    }
+
+    if recovered.len() < 2 {
+        return Err("decryption failed — need any two matching factors".into());
+    }
+
+    let combined = shamir_combine_2(&recovered[0], &recovered[1])?;
+    let master_key = Zeroizing::new(combined);
+
+    let decrypted = decrypt(vault_ct, &master_key)
+        .map_err(|_| "decryption failed — reconstructed key is wrong".to_string())?;
+    let json = decompress(&decrypted)?;
+    let vault: Vault = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
+
+    Ok(UnlockedVault {
+        entries: vault.entries,
+        master_key,
+        format: VaultFormat::V3 { salt, flags, shares_blob: shares_blob.to_vec() },
+        last_activity: Instant::now(),
+    })
+}
+
 #[tauri::command]
 fn unlock(
-    password: String,
+    pin: Option<String>,
+    password: Option<String>,
     keyfile: Option<Vec<u8>>,
     app: AppHandle,
     state: State<AppState>,
@@ -209,41 +385,26 @@ fn unlock(
     check_lockout(&state)?;
 
     let file_data = std::fs::read(vault_path(&app)).map_err(|_| "vault not found".to_string())?;
-    if file_data.len() < 18 {
-        return Err("corrupt vault file".into());
-    }
-    let version = file_data[0];
-    if version != 1 && version != 2 {
-        return Err("unsupported vault version".into());
-    }
-    let flags = file_data[1];
-    let salt: [u8; 16] = file_data[2..18].try_into().unwrap();
-    let encrypted = &file_data[18..];
+    if file_data.is_empty() { return Err("corrupt vault".into()); }
 
-    if flags & FLAG_KEYFILE != 0 && keyfile.is_none() {
-        return Err("keyfile required".into());
-    }
-
-    let key = derive_key(&password, keyfile.as_deref(), &salt);
-    let decrypted = match decrypt(encrypted, &key) {
-        Ok(j) => j,
-        Err(_) => {
-            let n = register_failure(&state);
-            return Err(format!("wrong password (attempt {})", n));
-        }
+    let result = match file_data[0] {
+        1 | 2 => unlock_legacy(&file_data, pin, keyfile),
+        3     => unlock_v3(&file_data, pin, password, keyfile),
+        _     => Err("unsupported vault version".into()),
     };
-    let json = if version == 2 { decompress(&decrypted)? } else { decrypted };
-    let vault: Vault = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
 
-    *state.failed_attempts.lock().unwrap() = 0;
-    *state.vault.lock().unwrap() = Some(UnlockedVault {
-        entries: vault.entries,
-        key,
-        salt,
-        flags,
-        last_activity: Instant::now(),
-    });
-    Ok(())
+    match result {
+        Ok(unlocked) => {
+            *state.failed_attempts.lock().unwrap() = 0;
+            *state.vault.lock().unwrap() = Some(unlocked);
+            Ok(())
+        }
+        Err(e) if e.contains("decryption failed") || e.contains("matching factors") => {
+            let n = register_failure(&state);
+            Err(format!("wrong credentials (attempt {})", n))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 #[tauri::command]
@@ -273,12 +434,21 @@ fn get_entries(state: State<AppState>) -> Result<Vec<VaultEntry>, String> {
 fn save_vault(app: &AppHandle, v: &UnlockedVault) -> Result<(), String> {
     let vault = Vault { entries: v.entries.clone() };
     let json = serde_json::to_vec(&vault).unwrap();
-    let encrypted = encrypt(&compress(&json), &v.key);
-    let mut file_data = Vec::with_capacity(18 + encrypted.len());
-    file_data.push(FILE_VERSION);
-    file_data.push(v.flags);
-    file_data.extend_from_slice(&v.salt);
-    file_data.extend_from_slice(&encrypted);
+    let vault_ct = encrypt(&compress(&json), &v.master_key);
+
+    let file_data = match &v.format {
+        VaultFormat::LegacyV2 { salt, flags } => {
+            let mut out = Vec::with_capacity(18 + vault_ct.len());
+            out.push(2);
+            out.push(*flags);
+            out.extend_from_slice(salt);
+            out.extend_from_slice(&vault_ct);
+            out
+        }
+        VaultFormat::V3 { salt, flags, shares_blob } => {
+            build_v3_file(*flags, salt, &vault_ct, shares_blob)
+        }
+    };
     std::fs::write(vault_path(app), &file_data).map_err(|e| e.to_string())
 }
 
@@ -331,31 +501,23 @@ fn generate_password(length: usize, symbols: bool) -> String {
 
 #[tauri::command]
 fn delete_vault(
-    password: String,
+    pin: Option<String>,
+    password: Option<String>,
     keyfile: Option<Vec<u8>>,
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
     check_lockout(&state)?;
-
     let file_data = std::fs::read(vault_path(&app)).map_err(|_| "vault not found".to_string())?;
-    if file_data.len() < 18 || (file_data[0] != 1 && file_data[0] != 2) {
-        return Err("corrupt vault".into());
-    }
-    let flags = file_data[1];
-    let salt: [u8; 16] = file_data[2..18].try_into().unwrap();
-    let encrypted = &file_data[18..];
-
-    if flags & FLAG_KEYFILE != 0 && keyfile.is_none() {
-        return Err("keyfile required".into());
-    }
-
-    let key = derive_key(&password, keyfile.as_deref(), &salt);
-    if decrypt(encrypted, &key).is_err() {
+    let ok = match file_data.first().copied() {
+        Some(1) | Some(2) => unlock_legacy(&file_data, pin, keyfile).is_ok(),
+        Some(3)           => unlock_v3(&file_data, pin, password, keyfile).is_ok(),
+        _                 => false,
+    };
+    if !ok {
         let n = register_failure(&state);
-        return Err(format!("wrong password (attempt {})", n));
+        return Err(format!("wrong credentials (attempt {})", n));
     }
-
     std::fs::remove_file(vault_path(&app)).map_err(|e| e.to_string())?;
     *state.vault.lock().unwrap() = None;
     *state.failed_attempts.lock().unwrap() = 0;
@@ -393,8 +555,9 @@ fn export_vault(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn import_vault(
     blob_b64: String,
+    pin: Option<String>,
+    password: Option<String>,
     keyfile: Option<Vec<u8>>,
-    password: String,
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
@@ -405,39 +568,13 @@ fn import_vault(
 
     let clean: String = blob_b64.chars().filter(|c| !c.is_whitespace()).collect();
     let raw = B64.decode(&clean).map_err(|e| format!("invalid backup data: {}", e))?;
-    if raw.len() < 18 {
-        return Err("backup too short".into());
-    }
-    let version = raw[0];
-    if version != 1 && version != 2 {
-        return Err("unsupported backup version".into());
-    }
-    let flags = raw[1];
-    let salt: [u8; 16] = raw[2..18].try_into().unwrap();
-    let encrypted = &raw[18..];
 
-    if flags & FLAG_KEYFILE != 0 && keyfile.is_none() {
-        return Err("keyfile required".into());
-    }
+    let unlocked = match raw.first().copied() {
+        Some(1) | Some(2) => unlock_legacy(&raw, pin, keyfile),
+        Some(3)           => unlock_v3(&raw, pin, password, keyfile),
+        _                 => Err("unsupported backup version".into()),
+    }?;
 
-    let key = derive_key(&password, keyfile.as_deref(), &salt);
-    let decrypted = match decrypt(encrypted, &key) {
-        Ok(d) => d,
-        Err(_) => {
-            let n = register_failure(&state);
-            return Err(format!("wrong password (attempt {})", n));
-        }
-    };
-    let json = if version == 2 { decompress(&decrypted)? } else { decrypted };
-    let vault: Vault = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
-
-    let unlocked = UnlockedVault {
-        entries: vault.entries,
-        key,
-        salt,
-        flags,
-        last_activity: Instant::now(),
-    };
     std::fs::create_dir_all(vault_path(&app).parent().unwrap()).ok();
     save_vault(&app, &unlocked)?;
 
@@ -503,7 +640,7 @@ pub fn run() {
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Passvault")
+                .tooltip("Onyxlock")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main(app),
@@ -522,7 +659,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             vault_exists,
-            vault_needs_keyfile,
+            vault_info,
             setup,
             unlock,
             lock,
@@ -542,6 +679,7 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
 fn compress(data: &[u8]) -> Vec<u8> {
     let mut enc = DeflateEncoder::new(Vec::new(), Compression::default());
     enc.write_all(data).unwrap();
@@ -554,4 +692,3 @@ fn decompress(data: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("decompress failed: {}", e))?;
     Ok(out)
 }
-

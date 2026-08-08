@@ -2,11 +2,23 @@ use std::sync::Mutex;
 use std::time::Instant;
 use zeroize::Zeroizing;
 use crate::vault::VaultEntry;
+
+pub enum VaultFormat {
+    LegacyV2 {
+        salt: [u8; 16],
+        flags: u8,
+    },
+    V3 {
+        salt: [u8; 16],
+        flags: u8,
+        shares_blob: Vec<u8>,
+    },
+}
+
 pub struct UnlockedVault {
     pub entries: Vec<VaultEntry>,
-    pub key: Zeroizing<[u8; 32]>,
-    pub salt: [u8; 16],
-    pub flags: u8,
+    pub master_key: Zeroizing<[u8; 32]>,
+    pub format: VaultFormat,
     pub last_activity: Instant,
 }
 

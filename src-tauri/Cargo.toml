@@ -1,10 +1,10 @@
 [package]
-name = "passvault"
+name = "onyxlock"
 version = "0.0.0"
 edition = "2021"
 
 [lib]
-name = "passvault_lib"
+name = "onyxlock_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

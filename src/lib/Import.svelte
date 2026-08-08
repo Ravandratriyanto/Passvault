@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { ArrowLeft, Paperclip, X, Check, Delete } from "@lucide/svelte";
+  import { ArrowLeft, Paperclip, X, Check, Delete, Eye, EyeOff } from "@lucide/svelte";
 
   let { onDone, onBack }: { onDone: () => void; onBack: () => void } = $props();
 
@@ -8,15 +8,17 @@
   let keyfileBytes = $state<Uint8Array | null>(null);
   let keyfileName = $state("");
   let pin = $state("");
+  let password = $state("");
+  let showPw = $state(false);
   let error = $state("");
   let loading = $state(false);
   let backupFileInput = $state<HTMLInputElement | undefined>();
   let keyfileInput = $state<HTMLInputElement | undefined>();
 
-  const MAX = 8;
+  const MAX_PIN = 8;
 
   function press(digit: string) {
-    if (pin.length < MAX) pin += digit;
+    if (pin.length < MAX_PIN) pin += digit;
   }
   function backspace() {
     pin = pin.slice(0, -1);
@@ -49,8 +51,8 @@
       error = "Paste your backup or upload a .passbackup file.";
       return;
     }
-    if (pin.length === 0) {
-      error = "Enter your PIN.";
+    if (pin.length === 0 && password.length === 0 && !keyfileBytes) {
+      error = "Provide at least one factor (PIN, password, or keyfile).";
       return;
     }
     error = "";
@@ -58,13 +60,14 @@
     try {
       await invoke("import_vault", {
         blobB64: blob,
+        pin: pin || null,
+        password: password || null,
         keyfile: keyfileBytes ? Array.from(keyfileBytes) : null,
-        password: pin,
       });
       onDone();
     } catch (e) {
       error = String(e);
-      pin = "";
+      pin = ""; password = "";
     } finally {
       loading = false;
     }
@@ -98,7 +101,22 @@
     </div>
 
     <div class="section">
-      <label class="section-label">Keyfile (only if the backup used one)</label>
+      <label class="section-label">Vault password (if the backup used one)</label>
+      <div class="pw-row">
+        <input
+          type={showPw ? "text" : "password"}
+          bind:value={password}
+          placeholder="Password"
+          autocomplete="current-password"
+          disabled={loading} />
+        <button class="eye" onclick={() => showPw = !showPw} aria-label="Toggle visibility">
+          {#if showPw}<EyeOff size={14} />{:else}<Eye size={14} />{/if}
+        </button>
+      </div>
+    </div>
+
+    <div class="section">
+      <label class="section-label">Keyfile (if the backup used one)</label>
       <input
         type="file"
         bind:this={keyfileInput}
@@ -120,7 +138,7 @@
     <div class="section">
       <label class="section-label">PIN</label>
       <div class="dots">
-        {#each Array(MAX) as _, i}
+        {#each Array(MAX_PIN) as _, i}
           <span class="dot" class:filled={i < pin.length}></span>
         {/each}
       </div>
@@ -132,12 +150,13 @@
           <Delete size={20} />
         </button>
         <button class="key" onclick={() => press("0")} disabled={loading}>0</button>
-        <button class="key confirm" onclick={submit} disabled={loading || pin.length === 0} aria-label="Restore">
+        <button class="key confirm" onclick={submit} disabled={loading} aria-label="Restore">
           {#if loading}…{:else}<Check size={20} />{/if}
         </button>
       </div>
     </div>
 
+    <p class="hint">v3 backups need any 2 factors. Legacy backups just need the PIN (+ keyfile if it had one).</p>
     {#if error}<p class="error">{error}</p>{/if}
   </div>
 </div>
@@ -181,6 +200,20 @@
   }
   .chip button:hover { color: #fc8181; }
 
+  .pw-row { position: relative; }
+  .pw-row input {
+    width: 100%; background: #111827; color: #cbd5e0;
+    border: 1px solid #2d3748; border-radius: 6px; padding: 8px 30px 8px 8px;
+    font-size: 13px;
+  }
+  .pw-row input:focus { outline: none; border-color: #4f46e5; }
+  .eye {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    background: transparent; color: #718096; padding: 4px;
+    display: flex; align-items: center;
+  }
+  .eye:hover { color: #e2e8f0; }
+
   .dots { display: flex; gap: 10px; justify-content: center; padding: 4px 0; }
   .dot {
     width: 12px; height: 12px; border-radius: 50%;
@@ -202,5 +235,6 @@
   .key.confirm { background: #4f46e5; color: white; }
   .key.confirm:hover:not(:disabled) { background: #4338ca; }
 
+  .hint { font-size: 11px; color: #6b7280; text-align: center; line-height: 1.4; }
   .error { color: #fc8181; font-size: 13px; text-align: center; }
 </style>
